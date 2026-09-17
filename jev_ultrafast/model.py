@@ -1,4 +1,4 @@
-"""TypeSafe makes choices; an optional small OpenAI-compatible model writes field values."""
+"""TypeSafe makes choices; Cerebras writes field values when needed."""
 
 import json
 import math
@@ -10,6 +10,18 @@ import httpx
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
+CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
+CEREBRAS_MODEL = "qwen-3.8-27b"
+FIELD_TEXT_SCHEMA = {
+    "name": "field_text",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {"text": {"type": ["string", "null"]}},
+        "required": ["text"],
+        "additionalProperties": False,
+    },
+}
 
 
 def post_json(url, key, body):
@@ -157,29 +169,44 @@ def field_context(goal, action, page, history):
     }
 
 
-def field_text(context):
-    key = os.environ.get("TEXT_MODEL_API_KEY")
+def field_text(context, image_data_uri=None):
+    key = os.environ.get("CEREBRAS_API_KEY")
     if not key:
-        raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
-    base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-    model = os.environ.get("TEXT_MODEL", "deepseek-chat")
-    reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
-    if os.environ.get("TEXT_MODEL_REASONING") == "none":
-        reasoning = {"reasoning": {"enabled": False}}
+        raise ValueError("TYPE_TEXT needs CEREBRAS_API_KEY; no text is hardcoded or guessed by the executor.")
+    base = os.environ.get("CEREBRAS_BASE_URL", CEREBRAS_BASE_URL).rstrip("/")
+    model = os.environ.get("CEREBRAS_MODEL", CEREBRAS_MODEL)
+    reasoning_effort = os.environ.get("CEREBRAS_REASONING_EFFORT", "none")
+    if reasoning_effort not in {"none", "low", "medium", "high"}:
+        raise ValueError("CEREBRAS_REASONING_EFFORT must be none, low, medium, or high.")
+    try:
+        max_completion_tokens = int(os.environ.get("CEREBRAS_MAX_COMPLETION_TOKENS", "128"))
+    except ValueError:
+        raise ValueError("CEREBRAS_MAX_COMPLETION_TOKENS must be an integer.") from None
+    if not 1 <= max_completion_tokens <= 4096:
+        raise ValueError("CEREBRAS_MAX_COMPLETION_TOKENS must be between 1 and 4096.")
+    if image_data_uri and not image_data_uri.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")):
+        raise ValueError("Cerebras image input must be a base64 JPEG or PNG data URI.")
+    user_content = json.dumps(context)
+    if image_data_uri:
+        user_content = [
+            {"type": "text", "text": user_content},
+            {"type": "image_url", "image_url": {"url": image_data_uri}},
+        ]
     started = time.perf_counter()
     result = post_json(
         base + "/chat/completions",
         key,
         {
             "model": model,
-            "max_tokens": 1024,
-            "response_format": {"type": "json_object"},
-            **reasoning,
+            "max_completion_tokens": max_completion_tokens,
+            "reasoning_effort": reasoning_effort,
+            "temperature": 0,
+            "response_format": {"type": "json_schema", "json_schema": FIELD_TEXT_SCHEMA},
             "messages": [
                 {"role": "system", "content": TEXT_VALUE},
                 {
                     "role": "user",
-                    "content": json.dumps(context),
+                    "content": user_content,
                 },
             ],
         },
@@ -195,4 +222,5 @@ def field_text(context):
         "model": model,
         "latency_ms": round((time.perf_counter() - started) * 1000),
         "usage": result.get("usage", {}),
+        "image_used": bool(image_data_uri),
     }

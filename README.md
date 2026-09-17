@@ -1,10 +1,10 @@
-<img src="docs/banner.svg" alt="Jev Ultrafast · Browser Use × TypeSafe" width="100%" />
+<img src="docs/banner.svg" alt="Jev Ultrafast · Browser Use × TypeSafe × Cerebras" width="100%" />
 
-# Jev Ultrafast ⚡
+# Jev Ultrafast with Cerebras ⚡
 
 **A browser agent with a dynamic, indexed action space.**
 
-Give it one goal. [TypeSafe's Jev](https://docs.typesafe.ai/introduction) picks an operation and an element. A small LLM writes text only when the operation is `TYPE_TEXT`.
+Give it one goal. [TypeSafe's Jev](https://docs.typesafe.ai/introduction) picks an operation and an element. Cerebras `qwen-3.8-27b` writes text only when the operation is `TYPE_TEXT`.
 
 **Zürich → London on Google Flights in 7.1 seconds.** One natural-language goal, actual text generation, and loading waits included.
 
@@ -39,7 +39,7 @@ page → element table → operation                 │
                     CLICK [7] ─────┤──→ browser
                 TYPE_TEXT [3] ─────┘
                           ↓
-                   small LLM → text → browser
+              Cerebras Qwen → text → browser
 ```
 
 Target questions are speculative. If the operation is `CLICK`, only `click_target` can execute. Two decisions, **one network round trip**. Each target head contains only compatible elements. Native dropdown choices carry an observed element/option index.
@@ -49,11 +49,11 @@ There are no site-specific action scripts or prepared field strings in the polic
 ## Try it
 
 ```bash
-git clone https://github.com/browser-use/jev-ultrafast.git
+git clone https://github.com/ryanl-cerebras/jev-ultrafast.git
 cd jev-ultrafast
 uv sync
 cp .env.example .env
-# Add TYPESAFE_API_KEY and TEXT_MODEL_API_KEY.
+# Add TYPESAFE_API_KEY and CEREBRAS_API_KEY.
 uv run jev
 ```
 
@@ -61,7 +61,9 @@ Open **http://127.0.0.1:8766** and click **Start demo → Run automatically**. T
 
 Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting. Allow remote debugging in Chrome when prompted.
 
-`TEXT_MODEL_API_KEY` is an OpenRouter key in the example configuration. The current demo uses `inception/mercury-2.5` with reasoning disabled. Gemini, GLM, and DeepSeek can also use the OpenAI-compatible text helper; configure the appropriate model, endpoint, and reasoning setting.
+`CEREBRAS_API_KEY` is used only when Jev chooses `TYPE_TEXT`. The default helper is `qwen-3.8-27b` with reasoning disabled and a 128-token completion budget. Configure `CEREBRAS_MODEL`, `CEREBRAS_REASONING_EFFORT`, and `CEREBRAS_MAX_COMPLETION_TOKENS` when testing another Cerebras deployment.
+
+The library does not send screenshots to Cerebras by default. Pass `text_vision=True` to `Agent` to include the current browser screenshot as a base64 JPEG data URI in text-helper requests. This also enables screenshot capture for the agent loop.
 
 ## Use the library
 
@@ -72,6 +74,7 @@ with Agent(
     "https://www.google.com/travel/flights?hl=en",
     "Find one-way flights from Zurich to London on September 20, 2026, "
     "for one adult in economy. Stop when matching flight options are visible.",
+    # text_vision=True,  # Optional Cerebras image input.
 ) as agent:
     for state in agent.run():
         print(state["elapsed_ms"], state["status"])
@@ -90,7 +93,7 @@ uv run --env-file .env python examples/run.py \
 ## Why it moves
 
 - **One request per decision cycle.** Operation and target heads share the same observed state.
-- **No screenshots in the default agent loop.** Jev consumes structured state. The inspector opts into screenshots; the video uses a separate continuous screencast.
+- **No screenshots in the default agent loop.** Jev consumes structured state. `text_vision=True` opts the Cerebras helper into the current screenshot; the inspector also captures screenshots for display.
 - **One browser call per snapshot.** Read visible controls, their names, values, and text atomically. Keep references to the actual DOM nodes.
 - **Validate the selected target.** Clicks check the document, form values, target, and nearby context. Animation alone does not force another prediction. Resolve current geometry and reject covered controls before input.
 - **Wait for useful state.** After typing into a combobox, wait for visible suggestions, capped at 200 ms. Other interactions get at most two animation frames or 50 ms. These reads happen after execution is logged.
@@ -112,6 +115,8 @@ Every executed target is resolved from an observed node. The executor rechecks p
 | [demo.py](jev_ultrafast/demo.py) | Local inspector |
 
 ## Evidence and limits
+
+The checked-in timing evidence predates the Cerebras helper and used `inception/mercury-2.5` through OpenRouter. It remains a record of the upstream Jev policy and browser loop, not a Cerebras performance claim. Re-run the matched measurements before comparing helper latency or task time.
 
 The current video is a **7,073 ms** Google Flights run. Timing starts after initial page observation and includes model calls, generated text, browser work, stale decisions, and loading waits. A fresh independent check verifies the one-way setting, Zürich, London, September 20, 2026, and visible flight options. The video plays at 1×, with no opening hold and a 0.5-second final hold.
 
@@ -135,4 +140,4 @@ Tests are offline. `uv run python scripts/check_guards.py` checks real controls 
 
 ---
 
-[Browser Use](https://github.com/browser-use/browser-use) · [Browser Harness](https://github.com/browser-use/browser-harness) · [TypeSafe speculative fan-out](https://docs.typesafe.ai/patterns/fan-out)
+[Browser Use](https://github.com/browser-use/browser-use) · [Browser Harness](https://github.com/browser-use/browser-harness) · [TypeSafe speculative fan-out](https://docs.typesafe.ai/patterns/fan-out) · [Cerebras Inference](https://inference-docs.cerebras.ai/)

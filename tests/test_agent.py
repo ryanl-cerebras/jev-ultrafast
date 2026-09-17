@@ -141,26 +141,70 @@ def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch
 
 
 def test_quoted_task_text_still_uses_the_llm(monkeypatch):
-    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("CEREBRAS_API_KEY", "test")
     post = Mock(return_value={"choices": [{"message": {"content": '{"text":"Zurich"}'}}]})
     monkeypatch.setattr(model, "post_json", post)
     context = model.field_context('Fly from "Zurich" to London', page()["actions"][0], page(), [])
     assert model.field_text(context)[0] == "Zurich"
     assert post.call_count == 1
-    sent = json.loads(post.call_args.args[2]["messages"][1]["content"])
+    url, key, body = post.call_args.args
+    assert url == "https://api.cerebras.ai/v1/chat/completions"
+    assert key == "test"
+    assert body["model"] == "qwen-3.8-27b"
+    assert body["reasoning_effort"] == "none"
+    assert body["max_completion_tokens"] == 128
+    assert body["response_format"]["type"] == "json_schema"
+    sent = json.loads(body["messages"][1]["content"])
     assert sent["goal"] == 'Fly from "Zurich" to London'
 
 
 def test_missing_text_credential_stops_before_guessing(monkeypatch):
-    monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="TEXT_MODEL_API_KEY"):
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="CEREBRAS_API_KEY"):
         model.field_text({"goal": 'Enter "Zurich"'})
+
+
+def test_cerebras_image_is_sent_as_a_base64_data_uri(monkeypatch):
+    monkeypatch.setenv("CEREBRAS_API_KEY", "test")
+    post = Mock(return_value={"choices": [{"message": {"content": '{"text":"Zurich"}'}}]})
+    monkeypatch.setattr(model, "post_json", post)
+    image = "data:image/jpeg;base64,dGVzdA=="
+    value, helper = model.field_text({"goal": "Enter the pictured city"}, image_data_uri=image)
+    content = post.call_args.args[2]["messages"][1]["content"]
+    assert value == "Zurich" and helper["image_used"] is True
+    assert content[0]["type"] == "text"
+    assert content[1] == {"type": "image_url", "image_url": {"url": image}}
+
+
+def test_cerebras_rejects_non_data_uri_images(monkeypatch):
+    monkeypatch.setenv("CEREBRAS_API_KEY", "test")
+    with pytest.raises(ValueError, match="base64 JPEG or PNG data URI"):
+        model.field_text({"goal": "Enter the pictured city"}, image_data_uri="https://example.test/image.png")
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("CEREBRAS_REASONING_EFFORT", "extreme", "must be none, low, medium, or high"),
+        ("CEREBRAS_MAX_COMPLETION_TOKENS", "many", "must be an integer"),
+        ("CEREBRAS_MAX_COMPLETION_TOKENS", "0", "must be between 1 and 4096"),
+    ],
+)
+def test_invalid_cerebras_configuration_stops_before_request(monkeypatch, name, value, message):
+    monkeypatch.setenv("CEREBRAS_API_KEY", "test")
+    monkeypatch.setenv(name, value)
+    post = Mock()
+    monkeypatch.setattr(model, "post_json", post)
+    with pytest.raises(ValueError, match=message):
+        model.field_text({"goal": "Find a flight"})
+    post.assert_not_called()
 
 
 @pytest.fixture
 def runner():
     a = loop.Agent.__new__(loop.Agent)
     a.screenshots = False
+    a.text_vision = False
     a.pending_text = None
     p = page()
     a.state = {
@@ -206,6 +250,20 @@ def test_changed_field_context_does_not_reuse_generated_text(runner, monkeypatch
     with pytest.raises(StalePage):
         runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
     runner.state["page"]["text"] = "Different page context"
+    runner.state["decision"] = decision()
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert helper.call_count == 2
+
+
+def test_changed_vision_input_does_not_reuse_generated_text(runner, monkeypatch):
+    helper = Mock(return_value=("book", {"model": "test", "latency_ms": 10}))
+    monkeypatch.setattr(loop, "field_text", helper)
+    runner.text_vision = True
+    runner.state["page"]["screenshot"] = "first"
+    runner.state["browser"].act.side_effect = [StalePage("Changed before input"), None]
+    with pytest.raises(StalePage):
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    runner.state["page"]["screenshot"] = "second"
     runner.state["decision"] = decision()
     runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
     assert helper.call_count == 2
@@ -306,7 +364,7 @@ def test_flight_verification_rejects_wrong_trip(changed):
     "content", ["Thinking: Zurich", '{"text":null}', '{"text":"Zurich","extra":true}', '{"text":123}']
 )
 def test_text_helper_rejects_invalid_values(monkeypatch, content):
-    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("CEREBRAS_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", Mock(return_value={"choices": [{"message": {"content": content}}]}))
     with pytest.raises(ValueError, match="nothing typed"):
         model.field_text({"goal": "Find a flight"})

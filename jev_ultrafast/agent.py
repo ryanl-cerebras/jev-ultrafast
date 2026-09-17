@@ -10,7 +10,7 @@ from .questions import MAX_STEPS
 
 
 class Agent:
-    def __init__(self, url, goals, *, record_dir=None, screenshots=False):
+    def __init__(self, url, goals, *, record_dir=None, screenshots=False, text_vision=False):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
@@ -18,7 +18,8 @@ class Agent:
         self.pending_text = None
         self.browser = Browser(url)
         self.record_dir = Path(record_dir) if record_dir else None
-        self.screenshots = screenshots or bool(record_dir)
+        self.text_vision = text_vision
+        self.screenshots = screenshots or bool(record_dir) or text_vision
         try:
             page = self.browser.observe(screenshot=self.screenshots)
         except Exception:
@@ -107,11 +108,15 @@ class Agent:
                 if not state["browser"].fresh(page):
                     raise StalePage("Page changed before text generation. Choose again.")
                 context = field_context(state["goal"], action, page, state["history"])
-                if self.pending_text and self.pending_text[0] == context:
+                image_data_uri = None
+                if self.text_vision:
+                    image_data_uri = f"data:image/jpeg;base64,{page['screenshot']}"
+                helper_input = (context, image_data_uri)
+                if self.pending_text and self.pending_text[0] == helper_input:
                     _, text, helper = self.pending_text
                 else:
-                    text, helper = field_text(context)
-                    self.pending_text = (context, text, helper)
+                    text, helper = field_text(context, image_data_uri=image_data_uri)
+                    self.pending_text = (helper_input, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
             # Browser.act checks freshness immediately before input, including after text generation.
             state["browser"].act(action, page, text=text)
