@@ -107,17 +107,28 @@ class Agent:
             if action["kind"] == "fill":
                 if not state["browser"].fresh(page):
                     raise StalePage("Page changed before text generation. Choose again.")
-                context = field_context(state["goal"], action, page, state["history"])
-                image_data_uri = None
-                if self.text_vision:
-                    image_data_uri = f"data:image/jpeg;base64,{page['screenshot']}"
-                helper_input = (context, image_data_uri)
-                if self.pending_text and self.pending_text[0] == helper_input:
-                    _, text, helper = self.pending_text
-                else:
-                    text, helper = field_text(context, image_data_uri=image_data_uri)
-                    self.pending_text = (helper_input, text, helper)
+                if decision.get("text") is not None:
+                    text = decision["text"]
+                    helper = {
+                        "model": decision["model"],
+                        "latency_ms": 0,
+                        "usage": {},
+                        "image_used": False,
+                        "combined_with_policy": True,
+                    }
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
+                else:
+                    context = field_context(state["goal"], action, page, state["history"])
+                    image_data_uri = None
+                    if self.text_vision:
+                        image_data_uri = f"data:image/jpeg;base64,{page['screenshot']}"
+                    helper_input = (context, image_data_uri)
+                    if self.pending_text and self.pending_text[0] == helper_input:
+                        _, text, helper = self.pending_text
+                    else:
+                        text, helper = field_text(context, image_data_uri=image_data_uri)
+                        self.pending_text = (helper_input, text, helper)
+                        state["text_calls"].append({**helper, "field": action["label"], "value": text})
             # Browser.act checks freshness immediately before input, including after text generation.
             state["browser"].act(action, page, text=text)
             self.pending_text = None

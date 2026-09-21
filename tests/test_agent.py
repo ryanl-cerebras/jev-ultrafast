@@ -89,6 +89,7 @@ def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
         }
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setenv("BROWSER_POLICY_PROVIDER", "typesafe")
     monkeypatch.setattr(model, "post_json", post)
     d = model.choose(page(), "Find a book", [])
     assert len(calls) == 1
@@ -108,6 +109,7 @@ def test_click_cannot_consume_a_text_target(monkeypatch):
         }
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setenv("BROWSER_POLICY_PROVIDER", "typesafe")
     monkeypatch.setattr(model, "post_json", post)
     with pytest.raises(ValueError, match="Invalid TypeSafe"):
         model.choose(page(), "Find a book", [])
@@ -135,9 +137,94 @@ def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch
         }
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setenv("BROWSER_POLICY_PROVIDER", "typesafe")
     monkeypatch.setattr(model, "post_json", post)
     d = model.choose(p, "Search with free cancellation", [])
     assert d["choice"] == "e3"
+
+
+def test_cerebras_policy_combines_choice_and_field_text(monkeypatch):
+    monkeypatch.setenv("CEREBRAS_API_KEY", "test")
+    monkeypatch.setenv("BROWSER_POLICY_PROVIDER", "cerebras")
+    post = Mock(
+        return_value={
+            "choices": [{"message": {"content": '{"choice":"TYPE_TEXT:1","text":"book"}'}}],
+            "usage": {"total_tokens": 42},
+        }
+    )
+    monkeypatch.setattr(model, "post_json", post)
+    result = model.choose(page(), "Find a book", [])
+    assert result["operation"] == "TYPE_TEXT"
+    assert result["choice"] == "e1"
+    assert result["text"] == "book"
+    url, key, body = post.call_args.args
+    assert url == "https://api.cerebras.ai/v1/chat/completions"
+    assert key == "test"
+    assert body["model"] == "qwen-3.8-27b"
+    assert body["reasoning_effort"] == "none"
+    assert body["response_format"]["json_schema"]["schema"]["properties"]["choice"]["enum"] == [
+        "TYPE_TEXT:1",
+        "CLICK:1",
+        "CLICK:2",
+        "WAIT",
+        "DONE",
+        "BLOCKED",
+    ]
+
+
+def test_cerebras_policy_rejects_text_for_non_fill(monkeypatch):
+    monkeypatch.setenv("CEREBRAS_API_KEY", "test")
+    monkeypatch.setenv("BROWSER_POLICY_PROVIDER", "cerebras")
+    monkeypatch.setattr(
+        model,
+        "post_json",
+        Mock(return_value={"choices": [{"message": {"content": '{"choice":"CLICK:2","text":"wrong"}'}}]}),
+    )
+    with pytest.raises(ValueError, match="no valid browser decision"):
+        model.choose(page(), "Find a book", [])
+
+
+def test_cerebras_policy_prioritizes_submit_after_fill(monkeypatch):
+    monkeypatch.setenv("CEREBRAS_API_KEY", "test")
+    monkeypatch.setenv("BROWSER_POLICY_PROVIDER", "cerebras")
+    post = Mock(
+        return_value={
+            "choices": [{"message": {"content": '{"choice":"CLICK:2","text":null}'}}]
+        }
+    )
+    monkeypatch.setattr(model, "post_json", post)
+    p = page()
+    p["actions"][0]["value"] = "book"
+    model.choose(
+        p,
+        "Find a book",
+        [{"action": "Search", "kind": "fill", "text": "book", "page_changed": True}],
+    )
+    body = post.call_args.args[2]
+    system = body["messages"][0]["content"]
+    assert "immediately previous action filled a text field" in system
+    assert "before changing filters or opening a result" in system
+    assert body["response_format"]["json_schema"]["schema"]["properties"]["choice"]["enum"] == [
+        "CLICK:2"
+    ]
+
+
+def test_cerebras_policy_rejects_choice_outside_post_fill_constraint(monkeypatch):
+    monkeypatch.setenv("CEREBRAS_API_KEY", "test")
+    monkeypatch.setenv("BROWSER_POLICY_PROVIDER", "cerebras")
+    monkeypatch.setattr(
+        model,
+        "post_json",
+        Mock(return_value={"choices": [{"message": {"content": '{"choice":"DONE","text":null}'}}]}),
+    )
+    p = page()
+    p["actions"][0]["value"] = "book"
+    with pytest.raises(ValueError, match="no valid browser decision"):
+        model.choose(
+            p,
+            "Find a book",
+            [{"action": "Search", "kind": "fill", "text": "book", "page_changed": True}],
+        )
 
 
 def test_quoted_task_text_still_uses_the_llm(monkeypatch):
@@ -241,6 +328,16 @@ def test_generated_text_reused_only_for_identical_retry_context(runner, monkeypa
     assert helper.call_count == 1
     assert runner.state["browser"].act.call_count == 2  # The first call rejects before any browser input.
     assert runner.pending_text is None
+
+
+def test_combined_policy_text_skips_the_second_model_call(runner, monkeypatch):
+    helper = Mock()
+    monkeypatch.setattr(loop, "field_text", helper)
+    runner.state["decision"].update(text="book", model="qwen-3.8-27b")
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    helper.assert_not_called()
+    assert runner.state["browser"].act.call_args.kwargs["text"] == "book"
+    assert runner.state["text_calls"][0]["combined_with_policy"] is True
 
 
 def test_changed_field_context_does_not_reuse_generated_text(runner, monkeypatch):
