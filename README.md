@@ -10,7 +10,7 @@ Give it one goal. [TypeSafe's Jev](https://docs.typesafe.ai/introduction) picks 
 
 <a href="docs/demo.mp4"><img src="docs/demo.gif" alt="A real Google Flights search at 1× speed, with generated city names and dynamic operation/target decisions" width="100%" /></a>
 
-[Watch the MP4](docs/demo.mp4) · [Measurements](docs/performance.md) · [Read the loop](jev_ultrafast/agent.py)
+[Watch the MP4](docs/demo.mp4) · [Measurements](docs/performance.md) · [Cerebras benchmarks](CEREBRAS_REPRODUCTION.md) · [Read the loop](jev_ultrafast/agent.py)
 
 ## The action space
 
